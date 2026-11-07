@@ -1,5 +1,5 @@
 // 用 Google 登入，把行程存在 Firebase，手機和電腦自動同步
-import { FIREBASE_CONFIG } from './firebase-config.js?v=6';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=7';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
 const bar = document.querySelector('#syncBar');
