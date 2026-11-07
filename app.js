@@ -8,14 +8,61 @@ const hhmm = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(
 const dur = m => (m >= 60 ? `${Math.floor(m / 60)} 小時${m % 60 ? ` ${m % 60} 分` : ''}` : `${m} 分`);
 const key = p => `${p.name}|${p.lat.toFixed(4)}|${p.lng.toFixed(4)}`;
 
-// ---------- 狀態（存在瀏覽器裡，下次打開還在） ----------
-const state = { days: 4, date: '', start: 'none', pace: 'normal', places: [] };
+// ---------- 狀態 ----------
+// state 是目前打開的方案；book 存所有方案（存在瀏覽器裡，登入後也同步到雲端）
+const TRIP_FIELDS = ['days', 'date', 'start', 'pace', 'places'];
+const blankTrip = () => ({ days: 4, date: '', start: 'none', pace: 'normal', places: [] });
+const copyTrip = t => JSON.parse(JSON.stringify(Object.fromEntries(TRIP_FIELDS.map(k => [k, t[k]]))));
+const newId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const state = blankTrip();
+let book = { plans: [], currentId: null };
 try {
-  const saved = JSON.parse(localStorage.getItem('jp-trip') || 'null');
-  if (saved) Object.assign(state, saved);
+  const saved = JSON.parse(localStorage.getItem('jp-trip-book') || 'null');
+  if (saved && saved.plans && saved.plans.length) book = saved;
+  else {
+    // 舊版只有一份行程：轉成第一個方案
+    const old = JSON.parse(localStorage.getItem('jp-trip') || 'null');
+    if (old) book.plans = [{ id: newId(), name: '', auto: true, trip: copyTrip({ ...blankTrip(), ...old }) }];
+  }
 } catch (e) { /* 無法讀取就用預設值 */ }
+if (!book.plans.length) book.plans = [{ id: newId(), name: '', auto: true, trip: blankTrip() }];
+if (!book.plans.some(p => p.id === book.currentId)) book.currentId = book.plans[0].id;
+const currentPlan = () => book.plans.find(p => p.id === book.currentId);
+Object.assign(state, copyTrip(currentPlan().trip));
+
+// 自動命名：依景點最多的地區，例如「東京-1」、「東京＋京都-1」
+function baseName(trip) {
+  const count = {};
+  trip.places.forEach(p => { count[p.region] = (count[p.region] || 0) + 1; });
+  const top = Object.entries(count).sort((a, b) => b[1] - a[1])
+    .filter(([, n], i) => i === 0 || n / trip.places.length >= 0.3).slice(0, 2).map(([r]) => r);
+  return top.length ? top.join('＋') : '新方案';
+}
+function autoName(plan) {
+  const base = baseName(plan.trip);
+  const used = new Set(book.plans.filter(p => p !== plan).map(p => p.name));
+  if (plan.name && plan.name.startsWith(base + '-') && !used.has(plan.name)) return plan.name;
+  let n = 1;
+  while (used.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+book.plans.forEach(p => { if (p.auto || !p.name) { p.auto = true; p.name = autoName(p); } });
+
+function persist() {
+  try { localStorage.setItem('jp-trip-book', JSON.stringify(book)); } catch (e) { /* 忽略 */ }
+}
+let savedTimer = null;
 const save = () => {
-  try { localStorage.setItem('jp-trip', JSON.stringify(state)); } catch (e) { /* 忽略 */ }
+  const plan = currentPlan();
+  plan.trip = copyTrip(state);
+  plan.updatedAt = Date.now();
+  if (plan.auto) plan.name = autoName(plan);
+  persist();
+  renderPlans();
+  $('#saveState').textContent = '✓ 已自動儲存';
+  $('#saveState').classList.add('flash');
+  clearTimeout(savedTimer);
+  savedTimer = setTimeout(() => $('#saveState').classList.remove('flash'), 1200);
   if (window.onTripChange) window.onTripChange(); // 登入時同步到雲端（sync.js）
 };
 
@@ -303,7 +350,7 @@ function plan(opts) {
     ${sanityWarnings()}
     ${warn}
     <div class="summary">
-      <span>${state.days} 天・${state.places.length} 個地點・${PACE[state.pace].label}步調</span>
+      <span><b>${esc(currentPlan().name)}</b>・${state.days} 天・${state.places.length} 個地點・${PACE[state.pace].label}步調</span>
       <div class="actions">
         <button type="button" class="ghost" id="print">列印／存成 PDF</button>
       </div>
@@ -348,19 +395,92 @@ function plan(opts) {
 }
 $('#plan').addEventListener('click', () => plan());
 
-// 套用從雲端同步來的行程（sync.js 會呼叫）
-const TRIP_FIELDS = ['days', 'date', 'start', 'pace', 'places'];
+// ---------- 我的方案 ----------
+// 把目前方案載入畫面
+function loadCurrent() {
+  Object.assign(state, copyTrip(currentPlan().trip));
+  $('#start').value = state.start;
+  $('#days').value = state.days;
+  $('#date').value = state.date;
+  paintPace(); renderList(); renderRegionSpots(); renderPlans();
+  if (shown && state.places.length) plan({ quiet: true });
+  else if (!state.places.length) clearResult();
+}
+function clearResult() {
+  shown = false;
+  $('#summary').innerHTML = ''; $('#daysOut').innerHTML = '';
+  $('#mapWrap').hidden = true; $('#placeholder').hidden = false;
+}
+function renderPlans() {
+  const plan = currentPlan();
+  $('#planSel').innerHTML = book.plans.map(p =>
+    `<option value="${p.id}" ${p.id === plan.id ? 'selected' : ''}>${esc(p.name)}（${p.trip.places.length} 個地點）</option>`).join('');
+  const input = $('#planName');
+  if (document.activeElement !== input) input.value = plan.auto ? '' : plan.name;
+  input.placeholder = plan.auto ? `自動命名：${plan.name}` : '方案名稱';
+  $('#planDel').hidden = book.plans.length < 2;
+}
+function switchPlan(id) {
+  book.currentId = id; persist(); loadCurrent();
+}
+$('#planSel').addEventListener('change', e => switchPlan(e.target.value));
+$('#planNew').addEventListener('click', () => {
+  const p = { id: newId(), name: '', auto: true, trip: blankTrip(), updatedAt: Date.now() };
+  book.plans.push(p);
+  p.name = autoName(p);
+  switchPlan(p.id);
+  save();
+});
+$('#planCopy').addEventListener('click', () => {
+  const src = currentPlan();
+  const p = { id: newId(), name: src.auto ? '' : `${src.name}（複本）`, auto: src.auto, trip: copyTrip(state), updatedAt: Date.now() };
+  book.plans.push(p);
+  if (p.auto) p.name = autoName(p);
+  switchPlan(p.id);
+  save();
+});
+$('#planDel').addEventListener('click', () => {
+  const p = currentPlan();
+  if (book.plans.length < 2 || !confirm(`確定要刪除「${p.name}」嗎？刪除後無法復原。`)) return;
+  book.plans = book.plans.filter(x => x.id !== p.id);
+  switchPlan(book.plans[0].id);
+  save();
+});
+$('#planName').addEventListener('input', e => {
+  const plan = currentPlan(), v = e.target.value.trim();
+  plan.auto = !v;
+  plan.name = v || autoName(plan);
+  save();
+});
+$('#planName').addEventListener('blur', renderPlans);
+
+// 給雲端同步用（sync.js 會呼叫）
 window.tripApp = {
-  getTrip: () => Object.fromEntries(TRIP_FIELDS.map(k => [k, state[k]])),
-  applyTrip(trip) {
-    TRIP_FIELDS.forEach(k => { if (trip[k] !== undefined) state[k] = trip[k]; });
-    try { localStorage.setItem('jp-trip', JSON.stringify(state)); } catch (e) { /* 忽略 */ }
-    $('#start').value = state.start;
-    $('#days').value = state.days;
-    $('#date').value = state.date;
-    paintPace(); renderList(); renderRegionSpots();
-    if (shown && state.places.length) plan({ quiet: true });
+  getData: () => ({ plans: book.plans }),
+  applyData(data) {
+    let plans = data.plans;
+    if (!plans && data.trip) plans = [{ id: newId(), name: '', auto: true, trip: copyTrip({ ...blankTrip(), ...data.trip }) }];
+    if (!plans || !plans.length) return;
+    book.plans = plans;
+    book.plans.forEach(p => { if (!p.name) { p.auto = true; p.name = autoName(p); } });
+    if (!book.plans.some(p => p.id === book.currentId)) book.currentId = book.plans[0].id;
+    persist(); loadCurrent();
+  },
+  // 第一次登入時：雲端和這台的方案合併，都不會不見
+  merge(cloud) {
+    const cloudPlans = (cloud && cloud.plans) ||
+      (cloud && cloud.trip ? [{ id: newId(), name: '', auto: true, trip: copyTrip({ ...blankTrip(), ...cloud.trip }) }] : []);
+    const ids = new Set(cloudPlans.map(p => p.id));
+    const sameTrip = (a, b) => JSON.stringify(a.trip.places) === JSON.stringify(b.trip.places);
+    const mine = book.plans.filter(p => !ids.has(p.id) && p.trip.places.length && !cloudPlans.some(c => sameTrip(c, p)));
+    const plans = [...cloudPlans, ...mine];
+    if (!plans.length) return false;
+    const keep = book.currentId;
+    this.applyData({ plans });
+    if (plans.some(p => p.id === keep)) switchPlan(keep);
+    return mine.length > 0 || !cloudPlans.length;
   },
 };
 
 renderList();
+renderPlans();

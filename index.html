@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
   <header class="hero">
@@ -23,6 +23,24 @@
 
   <main class="wrap layout">
     <section class="panel" aria-label="設定">
+      <div class="card plans-card">
+        <div class="plans-head">
+          <h2>📁 我的方案</h2>
+          <span id="saveState" class="save-state">改了會自動儲存</span>
+        </div>
+        <div class="plans-row">
+          <select id="planSel" aria-label="切換方案"></select>
+          <button type="button" class="ghost" id="planNew">＋ 新方案</button>
+        </div>
+        <label>方案名稱（空白就自動命名）
+          <input id="planName" type="text" maxlength="30">
+        </label>
+        <div class="plan-actions">
+          <button type="button" class="link" id="planCopy">複製一份來改</button>
+          <button type="button" class="link" id="planDel">刪除這個方案</button>
+        </div>
+      </div>
+
       <div class="card">
         <h2><span class="num">1</span>旅行設定</h2>
         <div class="grid2">
@@ -88,15 +106,15 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="data.js?v=7"></script>
-  <script src="planner.js?v=7"></script>
-  <script src="app.js?v=7"></script>
-  <script type="module" src="sync.js?v=7"></script>
+  <script src="data.js?v=8"></script>
+  <script src="planner.js?v=8"></script>
+  <script src="app.js?v=8"></script>
+  <script type="module" src="sync.js?v=8"></script>
   <script>
     // 自動更新：打開或切回來時檢查 version.json，有新版就重新載入
     // （主畫面捷徑會一直用暫存的舊網頁，靠這段換成新版）
     (function () {
-      var APP_VERSION = '7';
+      var APP_VERSION = '8';
       function check() {
         fetch('version.json?t=' + Date.now(), { cache: 'no-store' })
           .then(function (r) { return r.json(); })

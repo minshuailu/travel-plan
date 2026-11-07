@@ -1,5 +1,5 @@
 // 用 Google 登入，把行程存在 Firebase，手機和電腦自動同步
-import { FIREBASE_CONFIG } from './firebase-config.js?v=7';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=8';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
 const bar = document.querySelector('#syncBar');
@@ -25,7 +25,7 @@ async function start() {
   }
 
   const DEVICE = Math.random().toString(36).slice(2);
-  const LINKED = 'jp-trip-linked';
+  const LINKED = 'jp-trip-linked-v2'; // 改成多方案後，每台裝置重新合併一次
   const app = window.tripApp;
   let ref = null, unsub = null, timer = null, applying = false;
 
@@ -44,7 +44,7 @@ async function start() {
 
   const push = () => {
     if (!ref) return;
-    setDoc(ref, { trip: app.getTrip(), device: DEVICE, updatedAt: serverTimestamp() })
+    setDoc(ref, { plans: app.getData().plans, device: DEVICE, updatedAt: serverTimestamp() })
       .catch(e => console.warn('同步失敗', e));
   };
   window.onTripChange = () => {
@@ -80,21 +80,22 @@ async function start() {
     show(user, '連線中…');
     const myRef = doc(db, 'users', user.uid);
 
-    // 這台裝置第一次登入：決定要用雲端還是本機的行程
+    // 這台裝置第一次登入：雲端和這台的方案合併在一起
     if (localStorage.getItem(LINKED) !== user.uid) {
-      let cloud = null;
-      try { const snap = await getDoc(myRef); cloud = snap.exists() ? snap.data().trip : null; } catch (e) { /* 離線，先用本機的 */ }
-      const local = app.getTrip();
-      if (cloud && cloud.places && cloud.places.length) {
-        if (local.places.length && !same(cloud, local) &&
-          !confirm(`雲端已經有你的行程（${cloud.places.length} 個地點）。\n\n按「確定」：載入雲端的行程\n按「取消」：改用這台裝置的行程（${local.places.length} 個地點）並覆蓋雲端`)) {
-          ref = myRef; push();
-        } else {
-          applying = true; app.applyTrip(cloud); applying = false;
-        }
-      } else {
-        ref = myRef; push(); // 雲端還沒有資料，上傳這台的
+      let cloud;
+      try {
+        const snap = await getDoc(myRef);
+        cloud = snap.exists() ? snap.data() : null;
+      } catch (e) {
+        // 沒網路時先不要合併，免得蓋掉雲端的資料
+        show(user, '📴 離線中，連上網路後重新打開網頁就會同步');
+        return;
       }
+      applying = true;
+      const changed = app.merge(cloud);
+      applying = false;
+      ref = myRef;
+      if (changed) push();
       try { localStorage.setItem(LINKED, user.uid); } catch (e) { /* 忽略 */ }
     }
     ref = myRef;
@@ -103,9 +104,9 @@ async function start() {
       const m = snap.metadata;
       show(user, m.hasPendingWrites ? '⏳ 等待上傳（沒網路時會先存在這台）' : m.fromCache ? '📴 離線中' : '✓ 已同步');
       const data = snap.data();
-      if (!data || !data.trip || m.hasPendingWrites || data.device === DEVICE) return;
-      if (same(data.trip, app.getTrip())) return;
-      applying = true; app.applyTrip(data.trip); applying = false;
+      if (!data || m.hasPendingWrites || data.device === DEVICE) return;
+      if (data.plans && same(data.plans, app.getData().plans)) return;
+      applying = true; app.applyData(data); applying = false;
     }, err => show(user, '⚠️ 同步失敗：' + esc(err.code || err.message)));
   });
 }
