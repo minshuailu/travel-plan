@@ -153,3 +153,5 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
   body { background: #fff; }
   .card { box-shadow: none; break-inside: avoid; margin-bottom: 12px; }
 }
+.region-hint { width: 100%; margin: 0 0 2px; }
+.warn + .warn { margin-top: -8px; }

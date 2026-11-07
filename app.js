@@ -40,7 +40,7 @@ $('#pace').addEventListener('click', e => {
 // ---------- 清單 ----------
 function addPlace(p) {
   if (state.places.some(x => key(x) === key(p))) return;
-  state.places.push({ name: p.name, ja: p.ja || '', region: p.region || '其他', lat: p.lat, lng: p.lng, hours: p.hours || 1.5, tag: p.tag || '' });
+  state.places.push({ name: p.name, ja: p.ja || '', region: p.region || '其他', lat: p.lat, lng: p.lng, hours: p.hours || 1.5, tag: p.tag || '', area: p.area || '' });
   save(); renderList(); renderRegionSpots();
 }
 function removePlace(k) {
@@ -91,10 +91,16 @@ function renderRegionSpots() {
   if (!openRegion) { box.hidden = true; return; }
   const have = new Set(state.places.map(key));
   box.hidden = false;
-  box.innerHTML = SPOTS.filter(s => s.region === openRegion).map(s => {
-    const added = have.has(key(s));
-    return `<button type="button" class="chip ${added ? 'added' : ''}" data-i="${SPOTS.indexOf(s)}">${added ? '✓' : '+'} ${esc(s.name)}</button>`;
-  }).join('');
+  box.innerHTML = `<p class="hint region-hint">👇 點景點加入清單（再點一次取消）</p>` +
+    SPOTS.filter(s => s.region === openRegion).map(s => {
+      const added = have.has(key(s));
+      return `<button type="button" class="chip ${added ? 'added' : ''}" data-i="${SPOTS.indexOf(s)}">${added ? '✓' : '+'} ${esc(s.name)}</button>`;
+    }).join('');
+}
+function openRegionPanel(r) {
+  openRegion = r;
+  renderRegionSpots();
+  $('#regionSpots').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 $('#regionSpots').addEventListener('click', e => {
   const btn = e.target.closest('[data-i]');
@@ -125,6 +131,14 @@ function buildOptions() {
     html: `<span>${esc(s.name)}</span><span class="tag">${esc(s.region)}</span>`,
     pick: () => addPlace(s),
   }));
+  // 輸入的是城市名：引導去選當地景點
+  const city = CITIES[text.replace(/[市縣県府都]$/, '')];
+  if (city) {
+    local.unshift({
+      html: `<span class="web">📍 ${esc(text)}是城市，點這裡挑「${esc(city)}」的景點</span>`,
+      pick: () => openRegionPanel(city),
+    });
+  }
   local.push({
     html: `<span class="web">🔍 搜尋全日本：「${esc(text)}」</span>`,
     pick: () => searchWeb(text),
@@ -155,6 +169,8 @@ sug.addEventListener('mousedown', e => {
 q.addEventListener('blur', () => setTimeout(() => showOptions([]), 150));
 
 // 用 OpenStreetMap 搜尋內建清單沒有的地點
+const AREA_TYPES = new Set(['city', 'town', 'village', 'hamlet', 'quarter', 'suburb', 'neighbourhood',
+  'locality', 'municipality', 'county', 'state', 'province', 'region', 'administrative', 'stop', 'station']);
 function nearestRegion(p) {
   let best = null, bd = Infinity;
   for (const s of SPOTS) { const d = distanceKm(p, s); if (d < bd) { bd = d; best = s; } }
@@ -164,18 +180,21 @@ async function searchWeb(text) {
   clearTimeout(webTimer);
   showOptions([{ html: '<span class="tag">搜尋中…</span>', pick: () => {}, keepOpen: true }]);
   try {
-    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=jp&limit=6&accept-language=zh-TW,ja&q=' + encodeURIComponent(text);
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&countrycodes=jp&limit=10&accept-language=zh-TW,ja&q=' + encodeURIComponent(text);
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    const data = await res.json();
+    // 排除地名（同名的町、村、車站很多，例如「福岡」會先找到富山縣的福岡站）
+    const data = (await res.json()).filter(r => !AREA_TYPES.has(r.type) && r.category !== 'boundary' && r.category !== 'railway' && r.category !== 'public_transport');
     if (!data.length) {
-      showOptions([{ html: '<span class="tag">找不到，換個寫法試試（日文名稱通常比較準）</span>', pick: () => {}, keepOpen: true }]);
+      showOptions([{ html: '<span class="tag">找不到具體景點。請輸入景點名稱（例如「太宰府」），城市請用上方地區按鈕挑選</span>', pick: () => {}, keepOpen: true }]);
       return;
     }
-    showOptions(data.map(r => {
-      const p = { name: r.name || r.display_name.split(',')[0], ja: '', lat: +r.lat, lng: +r.lon, hours: 1.5 };
+    showOptions(data.slice(0, 6).map(r => {
+      const a = r.address || {};
+      const area = [a.province || a.state, a.city || a.town || a.village || a.county].filter(Boolean).join('・');
+      const p = { name: r.name || r.display_name.split(',')[0], ja: '', lat: +r.lat, lng: +r.lon, hours: 1.5, area };
       p.region = nearestRegion(p);
-      const detail = r.display_name.split(',').slice(1, 3).join('、');
-      return { html: `<span>${esc(p.name)}</span><span class="tag">${esc(detail)}</span>`, pick: () => addPlace(p) };
+      if (p.region === '其他' && area) p.region = area;
+      return { html: `<span>${esc(p.name)}</span><span class="tag">${esc(area || '日本')}</span>`, pick: () => addPlace(p) };
     }));
     sug.hidden = false; q.focus();
   } catch (e) {
@@ -237,6 +256,33 @@ function gmapRoute(from, ordered) {
   return u.toString();
 }
 
+// 防呆：找出離其他景點特別遠的地點，以及離景點很遠的出發機場
+function sanityWarnings() {
+  const ps = state.places, out = [];
+  if (ps.length > 1) {
+    const far = ps.filter(p => Math.min(...ps.filter(o => o !== p).map(o => distanceKm(p, o))) > 250);
+    // 全部都互相很遠（例如東京＋福岡＋札幌）就不提醒，只提醒少數離群的
+    if (far.length && far.length <= Math.max(1, Math.floor(ps.length / 3))) {
+      out.push(`<div class="warn">⚠️ ${far.map(p => `「${esc(p.name)}」${p.area ? `（${esc(p.area)}）` : ''}`).join('、')}離其他景點超過 250 公里，交通會花很久。如果找錯地方，請從清單刪掉再重新搜尋。</div>`);
+    }
+  }
+  const start = STARTS[state.start];
+  if (start && ps.length) {
+    const near = Math.min(...ps.map(p => distanceKm(start, p)));
+    if (near > 300) {
+      const [bestKey, best] = Object.entries(STARTS).filter(([, v]) => v)
+        .reduce((a, b) => (Math.min(...ps.map(p => distanceKm(b[1], p))) < Math.min(...ps.map(p => distanceKm(a[1], p))) ? b : a));
+      out.push(`<div class="warn">✈️ 出發的${esc(start.name)}離景點很遠。<button type="button" class="ghost" data-start="${bestKey}">改成${esc(best.name)}</button></div>`);
+    }
+  }
+  return out.join('');
+}
+$('#summary').addEventListener('click', e => {
+  const k = e.target.dataset.start;
+  if (!k) return;
+  state.start = k; $('#start').value = k; save(); plan();
+});
+
 let shown = false;
 function replanIfShown() { if (shown && state.places.length) plan(); }
 
@@ -251,6 +297,7 @@ function plan() {
       ? `<div class="warn">有幾天排得比較滿。照「${PACE[state.pace].label}」步調，建議排 <b>${result.suggestDays} 天</b>，或刪掉幾個地點。</div>`
       : `<div class="warn">有幾天排得比較滿，建議刪掉幾個地點，或把步調改成「緊湊」。</div>`;
   $('#summary').innerHTML = `
+    ${sanityWarnings()}
     ${warn}
     <div class="summary">
       <span>${state.days} 天・${state.places.length} 個地點・${PACE[state.pace].label}步調</span>
