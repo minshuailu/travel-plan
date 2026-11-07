@@ -53,6 +53,7 @@ function persist() {
 }
 let savedTimer = null;
 const save = () => {
+  if (viewing) return;
   const plan = currentPlan();
   plan.trip = copyTrip(state);
   plan.updatedAt = Date.now();
@@ -334,6 +335,9 @@ $('#summary').addEventListener('click', e => {
 });
 
 let shown = false;
+let viewing = null; // 正在看別人分享的行程時：{ name, trip }
+let lastResult = null;
+const planTitle = () => (viewing ? viewing.name : currentPlan().name);
 function replanIfShown() { if (shown && state.places.length) plan(); }
 
 function plan(opts) {
@@ -346,16 +350,21 @@ function plan(opts) {
     : result.suggestDays > state.days
       ? `<div class="warn">有幾天排得比較滿。照「${PACE[state.pace].label}」步調，建議排 <b>${result.suggestDays} 天</b>，或刪掉幾個地點。</div>`
       : `<div class="warn">有幾天排得比較滿，建議刪掉幾個地點，或把步調改成「緊湊」。</div>`;
+  lastResult = result;
   $('#summary').innerHTML = `
-    ${sanityWarnings()}
+    ${viewing ? '' : sanityWarnings()}
     ${warn}
     <div class="summary">
-      <span><b>${esc(currentPlan().name)}</b>・${state.days} 天・${state.places.length} 個地點・${PACE[state.pace].label}步調</span>
+      <span><b>${esc(planTitle())}</b>・${state.days} 天・${state.places.length} 個地點・${PACE[state.pace].label}步調</span>
       <div class="actions">
-        <button type="button" class="ghost" id="print">列印／存成 PDF</button>
+        <button type="button" class="ghost" id="shareText">📤 分享行程</button>
+        ${viewing ? '' : '<button type="button" class="ghost" id="shareLink">🔗 分享連結</button>'}
+        <button type="button" class="ghost" id="print">列印／PDF</button>
       </div>
     </div>`;
   $('#print').addEventListener('click', () => window.print());
+  $('#shareText').addEventListener('click', shareText);
+  if (!viewing) $('#shareLink').addEventListener('click', shareLink);
 
   let from = result.start;
   $('#daysOut').innerHTML = result.days.map(d => {
@@ -397,12 +406,16 @@ $('#plan').addEventListener('click', () => plan());
 
 // ---------- 我的方案 ----------
 // 把目前方案載入畫面
-function loadCurrent() {
-  Object.assign(state, copyTrip(currentPlan().trip));
+function fillInputs() {
   $('#start').value = state.start;
   $('#days').value = state.days;
   $('#date').value = state.date;
-  paintPace(); renderList(); renderRegionSpots(); renderPlans();
+  paintPace(); renderList(); renderRegionSpots();
+}
+function loadCurrent() {
+  if (viewing) { renderPlans(); return; } // 正在看別人分享的行程，先不換畫面
+  Object.assign(state, copyTrip(currentPlan().trip));
+  fillInputs(); renderPlans();
   if (shown && state.places.length) plan({ quiet: true });
   else if (!state.places.length) clearResult();
 }
@@ -492,6 +505,103 @@ window.tripApp = {
     return [];
   },
 };
+
+// ---------- 分享 ----------
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { t.hidden = true; }, 2500);
+}
+// 手機跳出分享選單（LINE、訊息…）；電腦不支援就複製到剪貼簿
+async function shareOut(title, text) {
+  if (navigator.share) {
+    try { await navigator.share({ title, text }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(text); toast('已複製，貼到 LINE 或訊息就可以了'); }
+  catch (e) { prompt('複製下面的內容：', text); }
+}
+
+function tripText() {
+  const r = lastResult, lines = [`🇯🇵 ${planTitle()}（${state.days} 天）`];
+  if (r.start) lines.push(`✈️ 從${r.start.name}出發`);
+  r.days.forEach(d => {
+    lines.push('', `【第 ${d.index + 1} 天${dayLabel(d.index) ? ' ' + dayLabel(d.index) : ''}】`);
+    if (d.free) { lines.push('自由活動'); return; }
+    d.items.forEach(it => {
+      if (it.type === 'visit') lines.push(`${hhmm(it.start)} ${it.place.name}（${dur(it.min)}）`);
+      else if (it.type === 'meal') lines.push(`${hhmm(it.start)} ${it.label.startsWith('午餐') ? '🍜' : '☕'} ${it.label}`);
+      else lines.push(`　↓ ${it.mode} 約 ${dur(it.min)}`);
+    });
+  });
+  return lines.join('\n');
+}
+function shareText() { if (lastResult) shareOut(planTitle(), tripText()); }
+
+// 分享連結：把行程壓縮後放在網址 # 後面（不會傳到任何伺服器）
+const b64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64url = str => Uint8Array.from(atob(str.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function pipe(bytes, stream) {
+  return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+}
+async function encodeTrip() {
+  // 內建景點只存名稱，自己搜尋的才存座標，連結比較短
+  const places = state.places.map(p => {
+    const s = SPOTS.find(x => key(x) === key(p));
+    if (s) return s.hours === p.hours ? s.name : [s.name, p.hours];
+    return [p.name, p.hours, +p.lat.toFixed(5), +p.lng.toFixed(5), p.region, p.area || '', p.tag || ''];
+  });
+  const bytes = new TextEncoder().encode(JSON.stringify({ n: planTitle(), d: state.days, t: state.date, s: state.start, p: state.pace, l: places }));
+  if (window.CompressionStream) return 'z' + b64url(await pipe(bytes, new CompressionStream('deflate-raw')));
+  return 'j' + b64url(bytes);
+}
+async function decodeTrip(code) {
+  let bytes = unb64url(code.slice(1));
+  if (code[0] === 'z') bytes = await pipe(bytes, new DecompressionStream('deflate-raw'));
+  const o = JSON.parse(new TextDecoder().decode(bytes));
+  const places = o.l.map(x => {
+    if (typeof x === 'string') return { ...SPOTS.find(s => s.name === x) };
+    if (x.length === 2) return { ...SPOTS.find(s => s.name === x[0]), hours: x[1] };
+    return { name: x[0], hours: x[1], lat: x[2], lng: x[3], region: x[4], area: x[5], tag: x[6], ja: '' };
+  }).filter(p => p.name);
+  return { name: o.n || '分享的行程', trip: { ...blankTrip(), days: o.d, date: o.t || '', start: o.s || 'none', pace: o.p || 'normal', places } };
+}
+async function shareLink() {
+  const url = `${location.origin}${location.pathname}#s=${await encodeTrip()}`;
+  shareOut(planTitle(), `🇯🇵 ${planTitle()}（${state.days} 天）\n點開看完整行程和地圖：\n${url}`);
+}
+
+// 打開別人分享的連結：只看不改，可以加入自己的方案
+async function openShared() {
+  const m = location.hash.match(/^#s=(.+)$/);
+  if (!m) return;
+  try { viewing = await decodeTrip(m[1]); } catch (e) { toast('分享連結壞掉了，打不開'); return; }
+  Object.assign(state, copyTrip(viewing.trip));
+  document.body.classList.add('viewing');
+  $('#viewBanner').hidden = false;
+  $('#viewName').textContent = viewing.name;
+  fillInputs();
+  plan({ quiet: true });
+}
+function exitView() {
+  viewing = null;
+  document.body.classList.remove('viewing');
+  $('#viewBanner').hidden = true;
+  history.replaceState(null, '', location.pathname + location.search);
+}
+$('#viewAdd').addEventListener('click', () => {
+  const names = new Set(book.plans.map(p => p.name));
+  let name = viewing.name, n = 2;
+  while (names.has(name)) name = `${viewing.name}（${n++}）`;
+  const p = { id: newId(), name, auto: false, trip: copyTrip(viewing.trip), updatedAt: Date.now() };
+  exitView();
+  book.plans.push(p);
+  switchPlan(p.id);
+  save();
+  toast(`已加入「${name}」，可以自己修改了`);
+});
+$('#viewClose').addEventListener('click', () => { exitView(); loadCurrent(); });
+openShared();
 
 renderList();
 renderPlans();
