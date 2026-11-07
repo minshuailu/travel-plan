@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <header class="hero">
@@ -17,6 +17,7 @@
       <p class="eyebrow">JAPAN TRIP PLANNER</p>
       <h1>日本行程小幫手</h1>
       <p class="sub">選好想去的地方，自動排出每天怎麼走最順。</p>
+      <div id="syncBar" class="sync" hidden></div>
     </div>
   </header>
 
@@ -82,13 +83,14 @@
   </main>
 
   <footer class="wrap foot">
-    🔒 你的清單和行程只存在你自己的瀏覽器裡，不會上傳，其他人看不到。<br>
+    🔒 沒登入時，行程只存在這台裝置的瀏覽器；登入後存在你自己的雲端空間，只有你的 Google 帳號看得到。<br>
     交通時間是依距離粗估，實際請以 Google 地圖或車站資訊為準。地圖 © OpenStreetMap
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="data.js?v=5"></script>
-  <script src="planner.js?v=5"></script>
-  <script src="app.js?v=5"></script>
+  <script src="data.js?v=6"></script>
+  <script src="planner.js?v=6"></script>
+  <script src="app.js?v=6"></script>
+  <script type="module" src="sync.js?v=6"></script>
 </body>
 </html>

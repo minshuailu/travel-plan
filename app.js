@@ -14,7 +14,10 @@ try {
   const saved = JSON.parse(localStorage.getItem('jp-trip') || 'null');
   if (saved) Object.assign(state, saved);
 } catch (e) { /* 無法讀取就用預設值 */ }
-const save = () => { try { localStorage.setItem('jp-trip', JSON.stringify(state)); } catch (e) { /* 忽略 */ } };
+const save = () => {
+  try { localStorage.setItem('jp-trip', JSON.stringify(state)); } catch (e) { /* 忽略 */ }
+  if (window.onTripChange) window.onTripChange(); // 登入時同步到雲端（sync.js）
+};
 
 // ---------- 設定 ----------
 $('#start').innerHTML = Object.entries(STARTS)
@@ -286,7 +289,7 @@ $('#summary').addEventListener('click', e => {
 let shown = false;
 function replanIfShown() { if (shown && state.places.length) plan(); }
 
-function plan() {
+function plan(opts) {
   if (!state.places.length) return;
   const result = planTrip({ places: state.places, days: state.days, startKey: state.start, pace: state.pace });
   shown = true;
@@ -341,8 +344,23 @@ function plan() {
   }).join('');
 
   drawMap(result);
-  if (window.innerWidth < 960) $('#mapWrap').scrollIntoView({ behavior: 'smooth' });
+  if (!(opts && opts.quiet) && window.innerWidth < 960) $('#mapWrap').scrollIntoView({ behavior: 'smooth' });
 }
-$('#plan').addEventListener('click', plan);
+$('#plan').addEventListener('click', () => plan());
+
+// 套用從雲端同步來的行程（sync.js 會呼叫）
+const TRIP_FIELDS = ['days', 'date', 'start', 'pace', 'places'];
+window.tripApp = {
+  getTrip: () => Object.fromEntries(TRIP_FIELDS.map(k => [k, state[k]])),
+  applyTrip(trip) {
+    TRIP_FIELDS.forEach(k => { if (trip[k] !== undefined) state[k] = trip[k]; });
+    try { localStorage.setItem('jp-trip', JSON.stringify(state)); } catch (e) { /* 忽略 */ }
+    $('#start').value = state.start;
+    $('#days').value = state.days;
+    $('#date').value = state.date;
+    paintPace(); renderList(); renderRegionSpots();
+    if (shown && state.places.length) plan({ quiet: true });
+  },
+};
 
 renderList();
