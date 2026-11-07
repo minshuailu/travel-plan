@@ -63,7 +63,7 @@ const save = () => {
   $('#saveState').classList.add('flash');
   clearTimeout(savedTimer);
   savedTimer = setTimeout(() => $('#saveState').classList.remove('flash'), 1200);
-  if (window.onTripChange) window.onTripChange(); // 登入時同步到雲端（sync.js）
+  if (window.onPlanChange) window.onPlanChange(plan); // 登入時同步到雲端（sync.js）
 };
 
 // ---------- 設定 ----------
@@ -443,8 +443,8 @@ $('#planDel').addEventListener('click', () => {
   const p = currentPlan();
   if (book.plans.length < 2 || !confirm(`確定要刪除「${p.name}」嗎？刪除後無法復原。`)) return;
   book.plans = book.plans.filter(x => x.id !== p.id);
+  if (window.onPlanDelete) window.onPlanDelete(p);
   switchPlan(book.plans[0].id);
-  save();
 });
 $('#planName').addEventListener('input', e => {
   const plan = currentPlan(), v = e.target.value.trim();
@@ -455,30 +455,41 @@ $('#planName').addEventListener('input', e => {
 $('#planName').addEventListener('blur', renderPlans);
 
 // 給雲端同步用（sync.js 會呼叫）
+// 雲端上每個方案是一筆獨立資料，所以兩台裝置不會互相把對方的方案蓋掉。
+// synced = 這個方案雲端上有，之後雲端沒有了就代表在別台被刪掉。
+const samePlaces = (a, b) => JSON.stringify(a.trip.places) === JSON.stringify(b.trip.places);
 window.tripApp = {
-  getData: () => ({ plans: book.plans }),
-  applyData(data) {
-    let plans = data.plans;
-    if (!plans && data.trip) plans = [{ id: newId(), name: '', auto: true, trip: copyTrip({ ...blankTrip(), ...data.trip }) }];
-    if (!plans || !plans.length) return;
-    book.plans = plans;
-    book.plans.forEach(p => { if (!p.name) { p.auto = true; p.name = autoName(p); } });
+  plans: () => book.plans,
+  markSynced(plan) { plan.synced = true; persist(); },
+  // 收到雲端的方案清單，合併進來；回傳這台才有、需要上傳的方案
+  applyRemote(remote, initial) {
+    const byId = new Map(remote.map(p => [p.id, p]));
+    const next = [], upload = [];
+    for (const p of book.plans) {
+      const r = byId.get(p.id);
+      if (r && (p.updatedAt || 0) > (r.updatedAt || 0)) { next.push(p); upload.push(p); byId.delete(p.id); } // 這台比較新
+      else if (r) { next.push({ ...r, synced: true }); byId.delete(p.id); }
+      else if (p.synced) { /* 別台刪掉了 */ }
+      else if (!p.trip.places.length && !p.updatedAt) { /* 系統自動開的空白方案，不上傳 */ }
+      else if (initial && (!p.trip.places.length || remote.some(x => samePlaces(x, p)))) { /* 空白或重複的就不上傳 */ }
+      else { next.push(p); upload.push(p); }
+    }
+    byId.forEach(r => next.push({ ...r, synced: true }));
+    if (!next.length) next.push({ id: newId(), name: '', auto: true, trip: blankTrip() });
+    const before = JSON.stringify(currentPlan() && currentPlan().trip);
+    book.plans = next;
+    next.forEach(p => { if (!p.name) { p.auto = true; p.name = autoName(p); } });
     if (!book.plans.some(p => p.id === book.currentId)) book.currentId = book.plans[0].id;
-    persist(); loadCurrent();
+    persist();
+    if (JSON.stringify(currentPlan().trip) !== before) loadCurrent(); else renderPlans();
+    return upload;
   },
-  // 第一次登入時：雲端和這台的方案合併，都不會不見
-  merge(cloud) {
-    const cloudPlans = (cloud && cloud.plans) ||
-      (cloud && cloud.trip ? [{ id: newId(), name: '', auto: true, trip: copyTrip({ ...blankTrip(), ...cloud.trip }) }] : []);
-    const ids = new Set(cloudPlans.map(p => p.id));
-    const sameTrip = (a, b) => JSON.stringify(a.trip.places) === JSON.stringify(b.trip.places);
-    const mine = book.plans.filter(p => !ids.has(p.id) && p.trip.places.length && !cloudPlans.some(c => sameTrip(c, p)));
-    const plans = [...cloudPlans, ...mine];
-    if (!plans.length) return false;
-    const keep = book.currentId;
-    this.applyData({ plans });
-    if (plans.some(p => p.id === keep)) switchPlan(keep);
-    return mine.length > 0 || !cloudPlans.length;
+  // 舊版的雲端資料（整份存在一起）轉成方案
+  legacyPlans(data) {
+    if (!data) return [];
+    if (data.plans) return data.plans.filter(p => p.trip && p.trip.places.length);
+    if (data.trip && data.trip.places && data.trip.places.length) return [{ id: newId(), name: '', auto: true, trip: copyTrip({ ...blankTrip(), ...data.trip }) }];
+    return [];
   },
 };
 

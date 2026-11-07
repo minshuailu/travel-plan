@@ -1,8 +1,10 @@
-// 用 Google 登入，把行程存在 Firebase，手機和電腦自動同步
-import { FIREBASE_CONFIG } from './firebase-config.js?v=8';
+// 用 Google 登入，把方案存在 Firebase，手機和電腦自動同步
+// 每個方案是 users/{uid}/plans/{方案id} 一筆資料，兩台裝置同時改也不會把對方的方案蓋掉
+import { FIREBASE_CONFIG } from './firebase-config.js?v=9';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
 const bar = document.querySelector('#syncBar');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 async function start() {
   if (!FIREBASE_CONFIG || !window.tripApp) return;
@@ -12,7 +14,8 @@ async function start() {
     import(`${SDK}/firebase-firestore.js`),
   ]);
   const { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } = authMod;
-  const { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, doc, getDoc, setDoc, onSnapshot, serverTimestamp } = fsMod;
+  const { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache,
+    doc, collection, getDoc, setDoc, deleteDoc, onSnapshot } = fsMod;
 
   const fb = initializeApp(FIREBASE_CONFIG);
   const auth = getAuth(fb);
@@ -24,12 +27,10 @@ async function start() {
     db = initializeFirestore(fb, { localCache: memoryLocalCache() });
   }
 
-  const DEVICE = Math.random().toString(36).slice(2);
-  const LINKED = 'jp-trip-linked-v2'; // 改成多方案後，每台裝置重新合併一次
   const app = window.tripApp;
-  let ref = null, unsub = null, timer = null, applying = false;
+  let col = null, unsub = null;
+  const timers = {};
 
-  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const show = (user, status) => {
     bar.hidden = false;
     if (!user) {
@@ -40,17 +41,21 @@ async function start() {
       <span class="sync-status">${status}</span>
       <button type="button" class="link" data-act="out">登出</button>`;
   };
-  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  const push = () => {
-    if (!ref) return;
-    setDoc(ref, { plans: app.getData().plans, device: DEVICE, updatedAt: serverTimestamp() })
-      .catch(e => console.warn('同步失敗', e));
+  const upload = plan => {
+    if (!col) return;
+    const { synced, ...data } = plan; // synced 只是這台自己的記號，不上傳
+    setDoc(doc(col, plan.id), JSON.parse(JSON.stringify(data))).catch(e => console.warn('同步失敗', e));
+    app.markSynced(plan);
   };
-  window.onTripChange = () => {
-    if (!ref || applying) return;
-    clearTimeout(timer);
-    timer = setTimeout(push, 600);
+  window.onPlanChange = plan => {
+    if (!col) return;
+    clearTimeout(timers[plan.id]);
+    timers[plan.id] = setTimeout(() => upload(plan), 600);
+  };
+  window.onPlanDelete = plan => {
+    clearTimeout(timers[plan.id]);
+    if (col) deleteDoc(doc(col, plan.id)).catch(e => console.warn('刪除失敗', e));
   };
 
   bar.addEventListener('click', async e => {
@@ -73,40 +78,39 @@ async function start() {
 
   getRedirectResult(auth).catch(() => {});
 
-  onAuthStateChanged(auth, async user => {
+  onAuthStateChanged(auth, user => {
     if (unsub) { unsub(); unsub = null; }
-    ref = null;
+    col = null;
     if (!user) { show(null); return; }
     show(user, '連線中…');
-    const myRef = doc(db, 'users', user.uid);
+    const myCol = collection(db, 'users', user.uid, 'plans');
+    let initial = true;
 
-    // 這台裝置第一次登入：雲端和這台的方案合併在一起
-    if (localStorage.getItem(LINKED) !== user.uid) {
-      let cloud;
-      try {
-        const snap = await getDoc(myRef);
-        cloud = snap.exists() ? snap.data() : null;
-      } catch (e) {
-        // 沒網路時先不要合併，免得蓋掉雲端的資料
-        show(user, '📴 離線中，連上網路後重新打開網頁就會同步');
-        return;
-      }
-      applying = true;
-      const changed = app.merge(cloud);
-      applying = false;
-      ref = myRef;
-      if (changed) push();
-      try { localStorage.setItem(LINKED, user.uid); } catch (e) { /* 忽略 */ }
-    }
-    ref = myRef;
-
-    unsub = onSnapshot(myRef, { includeMetadataChanges: true }, snap => {
+    unsub = onSnapshot(myCol, { includeMetadataChanges: true }, async snap => {
       const m = snap.metadata;
-      show(user, m.hasPendingWrites ? '⏳ 等待上傳（沒網路時會先存在這台）' : m.fromCache ? '📴 離線中' : '✓ 已同步');
-      const data = snap.data();
-      if (!data || m.hasPendingWrites || data.device === DEVICE) return;
-      if (data.plans && same(data.plans, app.getData().plans)) return;
-      applying = true; app.applyData(data); applying = false;
+      if (initial && m.fromCache) { show(user, '📴 連線中…（還沒連到雲端）'); return; } // 先等雲端回應，才知道哪些方案是這台獨有的
+      show(user, m.hasPendingWrites ? '⏳ 上傳中…' : m.fromCache ? '📴 離線中（改的內容會先存在這台）' : '✓ 已同步');
+      if (m.hasPendingWrites) return; // 自己剛改的，還沒上傳完
+      const remote = snap.docs.map(d => d.data());
+
+      let extra = [];
+      if (initial) {
+        // 舊版存在 users/{uid} 一整份的資料，搬過來
+        const legacyRef = doc(db, 'users', user.uid);
+        try {
+          const legacy = await getDoc(legacyRef);
+          if (legacy.exists()) {
+            const same = (a, b) => JSON.stringify(a.trip.places) === JSON.stringify(b.trip.places);
+            extra = app.legacyPlans(legacy.data()).filter(x => !remote.some(r => r.id === x.id || same(r, x)));
+            deleteDoc(legacyRef).catch(() => {}); // 搬完就刪掉，免得每次都再搬一次
+          }
+        } catch (e) { /* 沒有就算了 */ }
+      }
+      col = myCol;
+      const toUpload = app.applyRemote([...remote, ...extra], initial);
+      toUpload.forEach(upload);
+      extra.forEach(x => { const p = app.plans().find(y => y.id === x.id); if (p) upload(p); });
+      initial = false;
     }, err => show(user, '⚠️ 同步失敗：' + esc(err.code || err.message)));
   });
 }
