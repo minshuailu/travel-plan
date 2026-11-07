@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>日本行程小幫手</title>
+  <meta name="description" content="輸入想去的日本景點，自動排出每天的行程。">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <p class="eyebrow">JAPAN TRIP PLANNER</p>
+      <h1>日本行程小幫手</h1>
+      <p class="sub">選好想去的地方，自動排出每天怎麼走最順。</p>
+    </div>
+  </header>
+
+  <main class="wrap layout">
+    <section class="panel" aria-label="設定">
+      <div class="card">
+        <h2><span class="num">1</span>旅行設定</h2>
+        <div class="grid2">
+          <label>天數
+            <input id="days" type="number" min="1" max="21" value="4">
+          </label>
+          <label>出發日期（可不填）
+            <input id="date" type="date">
+          </label>
+        </div>
+        <label>從哪裡出發
+          <select id="start"></select>
+        </label>
+        <div class="field">
+          <span class="field-label">步調</span>
+          <div class="seg" id="pace" role="radiogroup">
+            <button type="button" data-v="relaxed">輕鬆</button>
+            <button type="button" data-v="normal">標準</button>
+            <button type="button" data-v="packed">緊湊</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2><span class="num">2</span>加入想去的地點</h2>
+        <div class="search">
+          <input id="q" type="text" placeholder="輸入景點，例如：清水寺、淺草、USJ" autocomplete="off">
+          <ul id="suggest" class="suggest" hidden></ul>
+        </div>
+        <p class="hint">找不到的話，選「搜尋全日本」可以查任何地點。</p>
+
+        <div class="regions" id="regions"></div>
+        <div class="region-spots" id="regionSpots" hidden></div>
+      </div>
+
+      <div class="card">
+        <div class="list-head">
+          <h2><span class="num">3</span>我的清單 <small id="count"></small></h2>
+          <button type="button" class="link" id="clear">清空</button>
+        </div>
+        <ul id="list" class="list"></ul>
+        <p class="empty" id="listEmpty">還沒有加入地點。</p>
+        <button type="button" class="primary" id="plan">自動排行程</button>
+      </div>
+    </section>
+
+    <section class="result" aria-label="行程">
+      <div id="mapWrap" class="card map-card" hidden>
+        <div id="map"></div>
+      </div>
+      <div id="summary"></div>
+      <div id="daysOut"></div>
+      <div id="placeholder" class="placeholder">
+        <div class="placeholder-art" aria-hidden="true">⛩</div>
+        <p>加入幾個地點後按「自動排行程」，<br>這裡會出現每天的行程和地圖。</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    交通時間是依距離粗估，實際請以 Google 地圖或車站資訊為準。地圖 © OpenStreetMap
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="data.js?v=2"></script>
+  <script src="planner.js?v=2"></script>
+  <script src="app.js?v=2"></script>
+</body>
+</html>
