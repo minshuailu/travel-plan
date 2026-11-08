@@ -389,26 +389,50 @@ function nearestRegion(p) {
   for (const s of SPOTS) { const d = distanceKm(p, s); if (d < bd) { bd = d; best = s; } }
   return bd < 40 ? best.region : '其他';
 }
+async function nominatim(text) {
+  const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&countrycodes=jp&limit=10&accept-language=zh-TW,ja&q=' + encodeURIComponent(text);
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  // 排除地名（同名的町、村、車站很多，例如「福岡」會先找到富山縣的福岡站）
+  return (await res.json()).filter(r => !AREA_TYPES.has(r.type) && r.category !== 'boundary' && r.category !== 'railway' && r.category !== 'public_transport');
+}
+// 小店常常查不到：去掉括號、「店」字和第一段店名，改找所在的商場或大樓
+function nearbyVariants(text) {
+  const cleaned = text.replace(/[（(][^）)]*[）)]/g, ' ').replace(/店(?=\s|$)/g, '').replace(/\s+/g, ' ').trim();
+  const tokens = cleaned.split(' ');
+  return [...new Set([cleaned, tokens.slice(1).join(' '), tokens.slice(-1)[0]])]
+    .filter(v => v && v !== text && v.length >= 2).slice(0, 2);
+}
 async function searchWeb(text) {
   clearTimeout(webTimer);
   showOptions([{ html: '<span class="tag">搜尋中…</span>', pick: () => {}, keepOpen: true }]);
   try {
-    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&countrycodes=jp&limit=10&accept-language=zh-TW,ja&q=' + encodeURIComponent(text);
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    // 排除地名（同名的町、村、車站很多，例如「福岡」會先找到富山縣的福岡站）
-    const data = (await res.json()).filter(r => !AREA_TYPES.has(r.type) && r.category !== 'boundary' && r.category !== 'railway' && r.category !== 'public_transport');
+    let data = await nominatim(text), nearby = false;
+    for (const v of data.length ? [] : nearbyVariants(text)) {
+      await new Promise(r => setTimeout(r, 1000)); // 地圖搜尋服務要求每秒最多查一次
+      data = await nominatim(v);
+      if (data.length) { nearby = true; break; }
+    }
+    if (q.value.trim() !== text) return;
     if (!data.length) {
-      showOptions([{ html: '<span class="tag">找不到具體景點。請輸入景點名稱（例如「太宰府」），城市請用上方地區按鈕挑選</span>', pick: () => {}, keepOpen: true }]);
+      showOptions([{ html: '<span class="tag">找不到。小店可以改貼 Google 地圖網址或地址，城市請用上方地區按鈕挑選</span>', pick: () => {}, keepOpen: true }]);
       return;
     }
-    showOptions(data.slice(0, 6).map(r => {
+    const opts = data.slice(0, nearby ? 3 : 6).map(r => {
       const a = r.address || {};
       const area = [a.province || a.state, a.city || a.town || a.village || a.county].filter(Boolean).join('・');
-      const p = { name: r.name || r.display_name.split(',')[0], ja: '', lat: +r.lat, lng: +r.lon, hours: 1.5, area };
+      const found = r.name || r.display_name.split(',')[0];
+      // 找到的是附近的商場／大樓時，名稱用你打的店名，位置標成大約
+      const p = nearby
+        ? { name: text, ja: '', lat: +r.lat, lng: +r.lon, hours: 1.5, area, approx: true, note: `位置用「${found}」代替` }
+        : { name: found, ja: '', lat: +r.lat, lng: +r.lon, hours: 1.5, area };
       p.region = nearestRegion(p);
       if (p.region === '其他' && area) p.region = area;
-      return { html: `<span>${esc(p.name)}</span><span class="tag">${esc(area || '日本')}</span>`, pick: () => addPlace(p) };
-    }));
+      const label = nearby ? `📍 加入「${esc(text)}」，位置用附近的「${esc(found)}」` : esc(found);
+      return { html: `<span${nearby ? ' class="web"' : ''}>${label}</span><span class="tag">${esc(area || '日本')}</span>`, pick: () => addPlace(p) };
+    });
+    if (nearby) opts.unshift(msgOption('找不到這家店本身，改找到它所在的商場／大樓：'));
+    showOptions(opts);
+    if (nearby) { active = 1; [...sug.children].forEach((li, i) => li.classList.toggle('active', i === 1)); }
     sug.hidden = false; q.focus();
   } catch (e) {
     showOptions([{ html: '<span class="tag">搜尋失敗，請檢查網路後再試</span>', pick: () => {}, keepOpen: true }]);
