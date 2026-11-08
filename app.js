@@ -91,7 +91,7 @@ $('#pace').addEventListener('click', e => {
 // ---------- 清單 ----------
 function addPlace(p) {
   if (state.places.some(x => key(x) === key(p))) return;
-  state.places.push({ name: p.name, ja: p.ja || '', region: p.region || '其他', lat: p.lat, lng: p.lng, hours: p.hours || 1.5, tag: p.tag || '', area: p.area || '' });
+  state.places.push({ name: p.name, ja: p.ja || '', region: p.region || '其他', lat: p.lat, lng: p.lng, hours: p.hours || 1.5, tag: p.tag || '', area: p.area || '', note: p.note || '', link: p.link || '', gmap: p.gmap || '' });
   save(); renderList(); renderRegionSpots();
 }
 function removePlace(k) {
@@ -102,25 +102,51 @@ function removePlace(k) {
 const HOUR_OPTS = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 9];
 function renderList() {
   const ul = $('#list');
-  ul.innerHTML = state.places.map(p => `
-    <li data-k="${esc(key(p))}">
-      <span class="name">${esc(p.name)}<small>${esc(p.region)}</small></span>
+  ul.innerHTML = state.places.map(p => {
+    const k = key(p), open = openNotes.has(k);
+    return `
+    <li data-k="${esc(k)}">
+      <span class="name">${esc(p.name)}<small>${esc(p.region)}${p.note ? `・${esc(p.note)}` : ''}</small></span>
+      <button type="button" class="note-btn ${p.note || p.link ? 'has' : ''}" aria-label="備註和連結" title="備註和連結">📝</button>
       <select aria-label="停留時間">${HOUR_OPTS.concat(HOUR_OPTS.includes(p.hours) ? [] : [p.hours]).sort((a, b) => a - b)
         .map(h => `<option value="${h}" ${h === p.hours ? 'selected' : ''}>${h} 小時</option>`).join('')}</select>
       <button type="button" class="x" aria-label="移除">×</button>
-    </li>`).join('');
+      <div class="note-edit" ${open ? '' : 'hidden'}>
+        <input type="text" data-f="note" placeholder="備註，例如：要預約、營業到 21:00" value="${esc(p.note || '')}">
+        <input type="url" data-f="link" placeholder="貼上 IG 或 Google 地圖連結" value="${esc(p.link || '')}">
+      </div>
+    </li>`;
+  }).join('');
   $('#count').textContent = state.places.length ? `${state.places.length} 個` : '';
   $('#listEmpty').hidden = state.places.length > 0;
   $('#plan').disabled = state.places.length === 0;
 }
+const openNotes = new Set(); // 哪些景點的備註欄是打開的
 $('#list').addEventListener('click', e => {
-  if (e.target.classList.contains('x')) removePlace(e.target.closest('li').dataset.k);
+  const li = e.target.closest('li');
+  if (!li) return;
+  if (e.target.classList.contains('x')) removePlace(li.dataset.k);
+  else if (e.target.classList.contains('note-btn')) {
+    const k = li.dataset.k;
+    if (openNotes.has(k)) openNotes.delete(k); else openNotes.add(k);
+    renderList();
+    if (openNotes.has(k)) $(`#list li[data-k="${CSS.escape(k)}"] [data-f="note"]`).focus();
+  }
 });
 $('#list').addEventListener('change', e => {
-  const k = e.target.closest('li').dataset.k;
-  const p = state.places.find(x => key(x) === k);
+  if (e.target.tagName !== 'SELECT') return;
+  const p = state.places.find(x => key(x) === e.target.closest('li').dataset.k);
   if (p) { p.hours = parseFloat(e.target.value); save(); }
 });
+$('#list').addEventListener('input', e => {
+  const f = e.target.dataset.f;
+  if (!f) return;
+  const p = state.places.find(x => key(x) === e.target.closest('li').dataset.k);
+  if (p) { p[f] = e.target.value.trim(); save(); }
+});
+$('#list').addEventListener('focusout', e => { if (e.target.dataset.f) renderListSoon(); });
+let listTimer = null;
+const renderListSoon = () => { clearTimeout(listTimer); listTimer = setTimeout(() => { if (!$('#list').contains(document.activeElement)) renderList(); }, 200); };
 $('#clear').addEventListener('click', () => {
   if (!state.places.length || !confirm('確定要清空清單嗎？')) return;
   state.places = []; save(); renderList(); renderRegionSpots();
@@ -175,9 +201,36 @@ function showOptions(list) {
   sug.innerHTML = list.map((o, i) => `<li data-i="${i}" class="${i === active ? 'active' : ''}">${o.html}</li>`).join('');
   sug.hidden = false;
 }
+// 從 Google 地圖完整網址讀出店名和座標
+function parseGmap(text) {
+  const url = (text.match(/https?:\/\/\S+/) || [])[0];
+  if (!url) return null;
+  if (/maps\.app\.goo\.gl|goo\.gl\/maps/.test(url)) return { short: true };
+  if (!/google\.[^/]+\/maps/.test(url)) return null;
+  const nameM = url.match(/\/maps\/place\/([^/@?]+)/);
+  const exact = url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  const view = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  const ll = exact || view;
+  if (!ll) return null;
+  let name = '';
+  try { name = decodeURIComponent(nameM ? nameM[1] : '').replace(/\+/g, ' '); } catch (e) { name = ''; }
+  const p = { name: name || '地圖上的地點', lat: +ll[1], lng: +ll[2], hours: 1.5, gmap: url };
+  p.region = nearestRegion(p);
+  return p;
+}
+
 function buildOptions() {
   const text = q.value.trim();
   if (!text) { showOptions([]); return; }
+  const g = parseGmap(text);
+  if (g && g.short) {
+    showOptions([{ html: '<span class="tag">這是短網址，網頁讀不到位置。請先用 Safari 打開它，再複製網址列的完整網址貼上</span>', pick: () => {}, keepOpen: true }]);
+    return;
+  }
+  if (g) {
+    showOptions([{ html: `<span class="web">📍 加入「${esc(g.name)}」（Google 地圖）</span><span class="tag">${esc(g.region)}</span>`, pick: () => addPlace(g) }]);
+    return;
+  }
   const local = matchLocal(text).map(s => ({
     html: `<span>${esc(s.name)}</span><span class="tag">${esc(s.region)}</span>`,
     pick: () => addPlace(s),
@@ -263,7 +316,35 @@ function ensureMap() {
     maxZoom: 18, attribution: '© OpenStreetMap',
   }).addTo(map);
   layer = L.layerGroup().addTo(map);
+  map.setView([36.2, 138.2], 5);
+  map.on('click', onMapPick);
 }
+
+// 在地圖上點選位置加入景點
+let picking = false;
+function setPicking(on) {
+  picking = on;
+  $('#mapWrap').classList.toggle('picking', on);
+  $('#pickBtn').textContent = on ? '✕ 取消點選' : '📍 在地圖上點選位置';
+}
+function onMapPick(e) {
+  if (!picking) return;
+  setPicking(false);
+  const name = prompt('這個地點叫什麼名字？');
+  if (!name || !name.trim()) return;
+  const p = { name: name.trim(), lat: e.latlng.lat, lng: e.latlng.lng, hours: 1.5 };
+  p.region = nearestRegion(p);
+  addPlace(p);
+  toast(`已加入「${p.name}」`);
+}
+$('#pickBtn').addEventListener('click', () => {
+  if (picking) { setPicking(false); return; }
+  $('#placeholder').hidden = true;
+  ensureMap();
+  setPicking(true);
+  $('#mapWrap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  toast('移動、放大地圖，點一下想加入的位置');
+});
 function drawMap(plan) {
   ensureMap();
   layer.clearLayers();
@@ -294,6 +375,15 @@ function dayLabel(i) {
   const d = new Date(state.date + 'T00:00:00');
   d.setDate(d.getDate() + i);
   return `${d.getMonth() + 1}/${d.getDate()}（${WEEK[d.getDay()]}）`;
+}
+// 景點名稱連到 Google 地圖；有存 IG 等其他連結就多一個 🔗
+const isGmap = u => /google\.[^/]+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps/.test(u);
+const safeUrl = u => (/^https?:\/\//.test(u) ? u : '');
+function visitLinks(p) {
+  const link = safeUrl(p.link || '');
+  const main = safeUrl(p.gmap || '') || (link && isGmap(link) ? link : gmapPlace(p));
+  const extra = link && !isGmap(link) ? ` <a class="extra-link" href="${esc(link)}" target="_blank" rel="noopener">🔗 ${/instagram\.com/.test(link) ? 'IG' : '連結'}</a>` : '';
+  return `<a href="${esc(main)}" target="_blank" rel="noopener">${esc(p.name)}</a>${extra}`;
 }
 const gmapPlace = p => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.ja || p.name)}%20${p.lat},${p.lng}`;
 function gmapRoute(from, ordered) {
@@ -380,8 +470,8 @@ function plan(opts) {
     const rows = d.items.map(it => {
       if (it.type === 'visit') {
         return `<li class="visit"><span class="time">${hhmm(it.start)}</span>
-          <div class="what"><a href="${gmapPlace(it.place)}" target="_blank" rel="noopener">${esc(it.place.name)}</a>
-          <small>停留約 ${dur(it.min)}${it.note ? `・${it.note}` : ''}</small></div></li>`;
+          <div class="what">${visitLinks(it.place)}
+          <small>停留約 ${dur(it.min)}${it.note ? `・${it.note}` : ''}${it.place.note ? `・📝 ${esc(it.place.note)}` : ''}</small></div></li>`;
       }
       if (it.type === 'meal') return `<li class="meal"><span class="time">${hhmm(it.start)}</span><div class="what">${it.label.startsWith('午餐') ? '🍜' : '☕'} ${it.label}</div></li>`;
       return `<li class="move"><span class="time"></span><div class="what">${it.mode}約 ${dur(it.min)}</div></li>`;
@@ -529,7 +619,10 @@ function tripText() {
     lines.push('', `【第 ${d.index + 1} 天${dayLabel(d.index) ? ' ' + dayLabel(d.index) : ''}】`);
     if (d.free) { lines.push('自由活動'); return; }
     d.items.forEach(it => {
-      if (it.type === 'visit') lines.push(`${hhmm(it.start)} ${it.place.name}（${dur(it.min)}）`);
+      if (it.type === 'visit') {
+        lines.push(`${hhmm(it.start)} ${it.place.name}（${dur(it.min)}）`);
+        if (it.place.note) lines.push(`　📝 ${it.place.note}`);
+      }
       else if (it.type === 'meal') lines.push(`${hhmm(it.start)} ${it.label.startsWith('午餐') ? '🍜' : '☕'} ${it.label}`);
       else lines.push(`　↓ ${it.mode} 約 ${dur(it.min)}`);
     });
@@ -548,8 +641,9 @@ async function encodeTrip() {
   // 內建景點只存名稱，自己搜尋的才存座標，連結比較短
   const places = state.places.map(p => {
     const s = SPOTS.find(x => key(x) === key(p));
-    if (s) return s.hours === p.hours ? s.name : [s.name, p.hours];
-    return [p.name, p.hours, +p.lat.toFixed(5), +p.lng.toFixed(5), p.region, p.area || '', p.tag || ''];
+    const extra = p.note || p.link ? [p.note || '', p.link || ''] : [];
+    if (s) return s.hours === p.hours && !extra.length ? s.name : [s.name, p.hours, ...extra];
+    return [p.name, p.hours, +p.lat.toFixed(5), +p.lng.toFixed(5), p.region, p.area || '', p.tag || '', ...extra];
   });
   const bytes = new TextEncoder().encode(JSON.stringify({ n: planTitle(), d: state.days, t: state.date, s: state.start, p: state.pace, l: places }));
   if (window.CompressionStream) return 'z' + b64url(await pipe(bytes, new CompressionStream('deflate-raw')));
@@ -560,9 +654,9 @@ async function decodeTrip(code) {
   if (code[0] === 'z') bytes = await pipe(bytes, new DecompressionStream('deflate-raw'));
   const o = JSON.parse(new TextDecoder().decode(bytes));
   const places = o.l.map(x => {
-    if (typeof x === 'string') return { ...SPOTS.find(s => s.name === x) };
-    if (x.length === 2) return { ...SPOTS.find(s => s.name === x[0]), hours: x[1] };
-    return { name: x[0], hours: x[1], lat: x[2], lng: x[3], region: x[4], area: x[5], tag: x[6], ja: '' };
+    if (typeof x === 'string') return { ...SPOTS.find(s => s.name === x), note: '', link: '' };
+    if (x.length === 2 || x.length === 4) return { ...SPOTS.find(s => s.name === x[0]), hours: x[1], note: x[2] || '', link: x[3] || '' };
+    return { name: x[0], hours: x[1], lat: x[2], lng: x[3], region: x[4], area: x[5], tag: x[6], note: x[7] || '', link: x[8] || '', ja: '' };
   }).filter(p => p.name);
   return { name: o.n || '分享的行程', trip: { ...blankTrip(), days: o.d, date: o.t || '', start: o.s || 'none', pace: o.p || 'normal', places } };
 }
