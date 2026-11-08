@@ -258,12 +258,28 @@ function buildOptions() {
   }, googleOption(text));
   showOptions(local);
 }
+// iPhone 上用新視窗開 Google 地圖，會留下一個空白頁（從主畫面圖示打開時還回不來），
+// 所以改成直接叫出 Google 地圖 App；沒裝 App 才用網頁開
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function openGmap(url) {
+  if (!isIOS) { window.open(url, '_blank', 'noopener'); return; }
+  location.href = url.replace(/^https?:\/\//, 'comgooglemapsurl://');
+  setTimeout(() => { if (!document.hidden) window.open(url, '_blank', 'noopener'); }, 1500);
+}
+// 行程裡的 Google 地圖連結（店名、Google 路線）也一樣
+document.addEventListener('click', e => {
+  const a = e.target.closest('a[href]');
+  if (!a || !isIOS || !/^https:\/\/www\.google\.[^/]+\/maps/.test(a.href)) return;
+  e.preventDefault();
+  openGmap(a.href);
+});
+
 // 到 Google 地圖找這家店，找到後複製地址或網址貼回來（手機會打開 Google 地圖 App）
 function googleOption(text) {
   return {
     html: `<span class="web">🗺️ 在 Google 地圖找「${esc(text)}」</span>`,
     pick: () => {
-      window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(text)}`, '_blank', 'noopener');
+      openGmap(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(text)}`);
       toast('找到後，複製地址（手機）或網址（電腦）貼回這裡');
     },
     keepOpen: true,

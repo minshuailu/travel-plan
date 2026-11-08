@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=21">
+  <link rel="stylesheet" href="style.css?v=22">
 </head>
 <body>
   <header class="hero">
@@ -119,15 +119,15 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="data.js?v=21"></script>
-  <script src="planner.js?v=21"></script>
-  <script src="app.js?v=21"></script>
-  <script type="module" src="sync.js?v=21"></script>
+  <script src="data.js?v=22"></script>
+  <script src="planner.js?v=22"></script>
+  <script src="app.js?v=22"></script>
+  <script type="module" src="sync.js?v=22"></script>
   <script>
     // 自動更新：打開或切回來時檢查 version.json，有新版就重新載入
     // （主畫面捷徑會一直用暫存的舊網頁，靠這段換成新版）
     (function () {
-      var APP_VERSION = '21';
+      var APP_VERSION = '22';
       function check() {
         fetch('version.json?t=' + Date.now(), { cache: 'no-store' })
           .then(function (r) { return r.json(); })
