@@ -830,5 +830,21 @@ $('#viewAdd').addEventListener('click', () => {
 $('#viewClose').addEventListener('click', () => { exitView(); loadCurrent(); });
 openShared();
 
+// iPhone 捷徑會打開「網站#add=Google 地圖網址」：自動放進搜尋框，直接跳出「加入」選項
+function openAdd() {
+  const m = location.hash.match(/^#add=(.+)$/);
+  if (!m) return;
+  let text = '';
+  try { text = decodeURIComponent(m[1]).trim(); } catch (e) { return; }
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!text) return;
+  q.value = text;
+  q.scrollIntoView({ block: 'center' });
+  q.focus();
+  buildOptions();
+}
+openAdd();
+window.addEventListener('hashchange', openAdd);
+
 renderList();
 renderPlans();

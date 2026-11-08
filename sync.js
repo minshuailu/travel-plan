@@ -1,6 +1,6 @@
 // 用 Google 登入，把方案存在 Firebase，手機和電腦自動同步
 // 每個方案是 users/{uid}/plans/{方案id} 一筆資料，兩台裝置同時改也不會把對方的方案蓋掉
-import { FIREBASE_CONFIG } from './firebase-config.js?v=18';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=19';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
 const bar = document.querySelector('#syncBar');
