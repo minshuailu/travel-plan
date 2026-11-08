@@ -201,11 +201,14 @@ function showOptions(list) {
   sug.innerHTML = list.map((o, i) => `<li data-i="${i}" class="${i === active ? 'active' : ''}">${o.html}</li>`).join('');
   sug.hidden = false;
 }
+// 短網址展開服務（Cloudflare Worker，程式在 worker/gmap-expand.js）；空字串代表還沒設定
+const EXPAND_API = 'https://gmap-expand.msla12587.workers.dev/';
+
 // 從 Google 地圖完整網址讀出店名和座標
 function parseGmap(text) {
   const url = (text.match(/https?:\/\/\S+/) || [])[0];
   if (!url) return null;
-  if (/maps\.app\.goo\.gl|goo\.gl\/maps/.test(url)) return { short: true };
+  if (/maps\.app\.goo\.gl|goo\.gl\/maps/.test(url)) return { short: url };
   if (!/google\.[^/]+\/maps/.test(url)) return null;
   const nameM = url.match(/\/maps\/place\/([^/@?]+)/);
   const exact = url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
@@ -223,10 +226,7 @@ function buildOptions() {
   const text = q.value.trim();
   if (!text) { showOptions([]); return; }
   const g = parseGmap(text);
-  if (g && g.short) {
-    showOptions([{ html: '<span class="tag">這是短網址，網頁讀不到位置。請先用 Safari 打開它，再複製網址列的完整網址貼上</span>', pick: () => {}, keepOpen: true }]);
-    return;
-  }
+  if (g && g.short) { expandShort(g.short, text); return; }
   if (g) {
     showOptions([{ html: `<span class="web">📍 加入「${esc(g.name)}」（Google 地圖）</span><span class="tag">${esc(g.region)}</span>`, pick: () => addPlace(g) }]);
     return;
@@ -249,6 +249,22 @@ function buildOptions() {
     keepOpen: true,
   });
   showOptions(local);
+}
+// 短網址交給展開服務換成完整網址，再讀出店名和座標
+const msgOption = html => ({ html: `<span class="tag">${html}</span>`, pick: () => {}, keepOpen: true });
+async function expandShort(short, typed) {
+  const fail = '讀不到這個短網址的位置。請先用 Safari 打開它，再複製網址列的完整網址貼上';
+  if (!EXPAND_API) { showOptions([msgOption(fail)]); return; }
+  showOptions([msgOption('讀取 Google 地圖連結中…')]);
+  try {
+    const res = await fetch(`${EXPAND_API}?url=${encodeURIComponent(short)}`);
+    const g = parseGmap((await res.json()).url || '');
+    if (q.value.trim() !== typed) return; // 讀取時已經改打別的了
+    if (!g || g.short) { showOptions([msgOption(fail)]); return; }
+    showOptions([{ html: `<span class="web">📍 加入「${esc(g.name)}」（Google 地圖）</span><span class="tag">${esc(g.region)}</span>`, pick: () => addPlace(g) }]);
+  } catch (e) {
+    showOptions([msgOption('讀取失敗，請檢查網路後再試')]);
+  }
 }
 function choose(i) {
   const o = options[i];
