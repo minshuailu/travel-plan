@@ -255,9 +255,21 @@ function buildOptions() {
     html: `<span class="web">🔍 搜尋全日本：「${esc(text)}」</span>`,
     pick: () => searchWeb(text),
     keepOpen: true,
-  });
+  }, googleOption(text));
   showOptions(local);
 }
+// 到 Google 地圖找這家店，找到後複製地址或網址貼回來（手機會打開 Google 地圖 App）
+function googleOption(text) {
+  return {
+    html: `<span class="web">🗺️ 在 Google 地圖找「${esc(text)}」</span>`,
+    pick: () => {
+      window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(text)}`, '_blank', 'noopener');
+      toast('找到後，複製地址（手機）或網址（電腦）貼回這裡');
+    },
+    keepOpen: true,
+  };
+}
+
 // 短網址交給展開服務換成完整網址，再讀出店名和座標
 const msgOption = html => ({ html: `<span class="tag">${html}</span>`, pick: () => {}, keepOpen: true });
 // 「店名 地址 郵遞區號」→ 先用郵遞區號找到大概區域，再在附近搜尋店名或大樓名稱
@@ -414,7 +426,8 @@ async function searchWeb(text) {
     }
     if (q.value.trim() !== text) return;
     if (!data.length) {
-      showOptions([{ html: '<span class="tag">找不到。小店可以改貼 Google 地圖網址或地址，城市請用上方地區按鈕挑選</span>', pick: () => {}, keepOpen: true }]);
+      showOptions([msgOption('這裡找不到。可以到 Google 地圖找，再把地址或網址貼回來：'), googleOption(text)]);
+      active = 1; [...sug.children].forEach((li, i) => li.classList.toggle('active', i === 1));
       return;
     }
     const opts = data.slice(0, nearby ? 3 : 6).map(r => {
@@ -431,6 +444,7 @@ async function searchWeb(text) {
       return { html: `<span${nearby ? ' class="web"' : ''}>${label}</span><span class="tag">${esc(area || '日本')}</span>`, pick: () => addPlace(p) };
     });
     if (nearby) opts.unshift(msgOption('找不到這家店本身，改找到它所在的商場／大樓：'));
+    opts.push(googleOption(text)); // 分不清是哪一家時，也可以到 Google 地圖確認
     showOptions(opts);
     if (nearby) { active = 1; [...sug.children].forEach((li, i) => li.classList.toggle('active', i === 1)); }
     sug.hidden = false; q.focus();
