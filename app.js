@@ -237,6 +237,7 @@ function buildOptions() {
   if (!text) { showOptions([]); return; }
   const g = parseGmap(text);
   if (g && g.short) { expandShort(g.short, text); return; }
+  if (!g && looksLikeAddress(text)) { offerAddress(text); return; }
   if (g) { offerGmap(g, text); return; }
   const local = matchLocal(text).map(s => ({
     html: `<span>${esc(s.name)}</span><span class="tag">${esc(s.region)}</span>`,
@@ -261,37 +262,77 @@ function buildOptions() {
 const msgOption = html => ({ html: `<span class="tag">${html}</span>`, pick: () => {}, keepOpen: true });
 // 「店名 地址 郵遞區號」→ 先用郵遞區號找到大概區域，再在附近搜尋店名或大樓名稱
 // 座標只用來估算交通時間；點店名還是會打開 Google 地圖上準確的那一家
+const getJson = async u => (await fetch(u)).json();
+// 日本郵遞區號（例如 〒170-0013）→ 那一區的中心點
+async function postalCenter(text) {
+  const m = text.match(/(\d{3})[-−ー－‐]?(\d{4})/);
+  if (!m) return null;
+  const r = await getJson(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=jp&postalcode=${m[1]}-${m[2]}`);
+  return r[0] ? { lat: +r[0].lat, lng: +r[0].lon } : null;
+}
+// 名稱一個一個試，只接受離中心點 1.5 公里內的結果
+async function findNear(center, names) {
+  for (const t of names) {
+    const bias = center ? `&lat=${center.lat}&lon=${center.lng}` : '';
+    const r = await getJson(`https://photon.komoot.io/api/?limit=1&q=${encodeURIComponent(t)}${bias}`);
+    const f = r.features && r.features[0];
+    if (!f) continue;
+    const cand = { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+    if (!center || distanceKm(center, cand) < 1.5) return cand;
+  }
+  return null;
+}
+
+// 「店名 地址 郵遞區號」→ 先用郵遞區號找到大概區域，再在附近搜尋店名或大樓名稱
+// 座標只用來估算交通時間；點店名還是會打開 Google 地圖上準確的那一家
 async function locateQuery(query, gmap) {
   const tokens = query.split(/[\s+]+/).filter(Boolean);
   const isAddr = t => /^\d|chome|丁目|番地|^\d+F$/i.test(t);
   const cut = tokens.findIndex(isAddr);
   const nameTokens = cut > 0 ? tokens.slice(0, cut) : tokens.slice(0, 3);
   const name = nameTokens.slice(0, 3).join(' ');
-  const postal = (query.match(/\d{3}-\d{4}/) || [])[0];
-  const getJson = async u => (await fetch(u)).json();
-
-  let center = null;
-  if (postal) {
-    const r = await getJson(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=jp&postalcode=${postal}`);
-    if (r[0]) center = { lat: +r[0].lat, lng: +r[0].lon };
-  }
-  // 名稱一個一個試（長的先），只接受離郵遞區號區域 1.5 公里內的結果
+  const center = await postalCenter(query);
   const tries = [...new Set([nameTokens.join(' '), ...[...nameTokens].sort((a, b) => b.length - a.length)])]
     .filter(t => t.length >= 2).slice(0, 4);
-  let found = null;
-  for (const t of tries) {
-    const bias = center ? `&lat=${center.lat}&lon=${center.lng}` : '';
-    const r = await getJson(`https://photon.komoot.io/api/?limit=1&q=${encodeURIComponent(t)}${bias}`);
-    const f = r.features && r.features[0];
-    if (!f) continue;
-    const cand = { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
-    if (!center || distanceKm(center, cand) < 1.5) { found = cand; break; }
-  }
-  const ll = found || center;
+  const ll = (await findNear(center, tries)) || center;
   if (!ll) return null;
   const p = { name: name || '地圖上的地點', ...ll, hours: 1.5, gmap, approx: true };
   p.region = nearestRegion(p);
   return p;
+}
+
+// 從 Google 地圖複製的地址（例如「日本〒170-0013 Tokyo, Toshima City, … 池袋サンシャインシティアルタ 1F」）
+const looksLikeAddress = t => /〒|\d{3}[-−ー－‐]\d{4}|chome|丁目/i.test(t) && !/https?:\/\//.test(t);
+async function locateAddress(text) {
+  const center = await postalCenter(text);
+  // 大樓或店名：有中日文字、不含數字的片段，長的先試
+  const names = text.replace(/日本|〒/g, ' ').split(/[\s,，、]+/)
+    .filter(t => /[\u3040-\u30ff\u4e00-\u9fff]{2,}/.test(t) && !/\d/.test(t))
+    .sort((a, b) => b.length - a.length).slice(0, 3);
+  const ll = (await findNear(center, names)) || center;
+  if (!ll) return null;
+  const p = { name: names[0] || text.replace(/^日本\s*/, '').slice(0, 20), ...ll, hours: 1.5, approx: true, note: text };
+  p.region = nearestRegion(p);
+  return p;
+}
+async function offerAddress(text) {
+  showOptions([msgOption('用地址找位置中…')]);
+  await new Promise(r => setTimeout(r, 500)); // 還在打字就先不查
+  if (q.value.trim() !== text) return;
+  let p = null;
+  try { p = await locateAddress(text); } catch (e) { /* 下面處理 */ }
+  if (q.value.trim() !== text) return;
+  if (!p) { showOptions([msgOption('找不到這個地址。可以改貼 Google 地圖網址，或用「在地圖上點選位置」')]); return; }
+  showOptions([{
+    html: `<span class="web">📍 用這個地址加入（位置是大約的）</span><span class="tag">${esc(p.region)}</span>`,
+    pick: () => {
+      const name = prompt('這個地點叫什麼名字？', p.name);
+      if (name === null) return;
+      p.name = name.trim() || p.name;
+      addPlace(p);
+      toast(`已加入「${p.name}」，地址存在備註裡`);
+    },
+  }]);
 }
 
 async function expandShort(short, typed) {
