@@ -31,7 +31,7 @@ export default {
       const next = new URL(loc, current);
       if (!isGoogle(next)) break;
       current = next;
-      if (/\/maps\//.test(current.pathname)) break;
+      if (current.pathname.startsWith('/maps')) break; // 已經是地圖網址就停，再往下會被 Google 當成機器人
     }
     return reply({ url: current.toString() });
   },

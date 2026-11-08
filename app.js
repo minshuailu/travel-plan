@@ -91,7 +91,7 @@ $('#pace').addEventListener('click', e => {
 // ---------- 清單 ----------
 function addPlace(p) {
   if (state.places.some(x => key(x) === key(p))) return;
-  state.places.push({ name: p.name, ja: p.ja || '', region: p.region || '其他', lat: p.lat, lng: p.lng, hours: p.hours || 1.5, tag: p.tag || '', area: p.area || '', note: p.note || '', link: p.link || '', gmap: p.gmap || '' });
+  state.places.push({ name: p.name, ja: p.ja || '', region: p.region || '其他', lat: p.lat, lng: p.lng, hours: p.hours || 1.5, tag: p.tag || '', area: p.area || '', note: p.note || '', link: p.link || '', gmap: p.gmap || '', approx: !!p.approx });
   save(); renderList(); renderRegionSpots();
 }
 function removePlace(k) {
@@ -106,7 +106,7 @@ function renderList() {
     const k = key(p), open = openNotes.has(k);
     return `
     <li data-k="${esc(k)}">
-      <span class="name">${esc(p.name)}<small>${esc(p.region)}${p.note ? `・${esc(p.note)}` : ''}</small></span>
+      <span class="name">${esc(p.name)}<small>${esc(p.region)}${p.approx ? '・位置是大約的' : ''}${p.note ? `・${esc(p.note)}` : ''}</small></span>
       <button type="button" class="note-btn ${p.note || p.link ? 'has' : ''}" aria-label="備註和連結" title="備註和連結">📝</button>
       <select aria-label="停留時間">${HOUR_OPTS.concat(HOUR_OPTS.includes(p.hours) ? [] : [p.hours]).sort((a, b) => a - b)
         .map(h => `<option value="${h}" ${h === p.hours ? 'selected' : ''}>${h} 小時</option>`).join('')}</select>
@@ -206,15 +206,25 @@ const EXPAND_API = 'https://gmap-expand.msla12587.workers.dev/';
 
 // 從 Google 地圖完整網址讀出店名和座標
 function parseGmap(text) {
-  const url = (text.match(/https?:\/\/\S+/) || [])[0];
+  let url = (text.match(/https?:\/\/\S+/) || [])[0];
   if (!url) return null;
+  // Google 的機器人驗證頁：真正的網址在 continue 參數裡
+  if (/google\.[^/]+\/sorry\//.test(url)) {
+    try { url = new URL(url).searchParams.get('continue') || ''; } catch (e) { return null; }
+    if (!url) return null;
+  }
   if (/maps\.app\.goo\.gl|goo\.gl\/maps/.test(url)) return { short: url };
   if (!/google\.[^/]+\/maps/.test(url)) return null;
   const nameM = url.match(/\/maps\/place\/([^/@?]+)/);
   const exact = url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
   const view = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
   const ll = exact || view;
-  if (!ll) return null;
+  if (!ll) {
+    // iPhone 分享的連結常是 /maps?q=店名+地址 的格式，沒有座標，之後再用地址找位置
+    let qs = '';
+    try { qs = new URL(url).searchParams.get('q') || ''; } catch (e) { /* 忽略 */ }
+    return qs ? { query: qs, gmap: url } : null;
+  }
   let name = '';
   try { name = decodeURIComponent(nameM ? nameM[1] : '').replace(/\+/g, ' '); } catch (e) { name = ''; }
   const p = { name: name || '地圖上的地點', lat: +ll[1], lng: +ll[2], hours: 1.5, gmap: url };
@@ -227,10 +237,7 @@ function buildOptions() {
   if (!text) { showOptions([]); return; }
   const g = parseGmap(text);
   if (g && g.short) { expandShort(g.short, text); return; }
-  if (g) {
-    showOptions([{ html: `<span class="web">📍 加入「${esc(g.name)}」（Google 地圖）</span><span class="tag">${esc(g.region)}</span>`, pick: () => addPlace(g) }]);
-    return;
-  }
+  if (g) { offerGmap(g, text); return; }
   const local = matchLocal(text).map(s => ({
     html: `<span>${esc(s.name)}</span><span class="tag">${esc(s.region)}</span>`,
     pick: () => addPlace(s),
@@ -252,6 +259,41 @@ function buildOptions() {
 }
 // 短網址交給展開服務換成完整網址，再讀出店名和座標
 const msgOption = html => ({ html: `<span class="tag">${html}</span>`, pick: () => {}, keepOpen: true });
+// 「店名 地址 郵遞區號」→ 先用郵遞區號找到大概區域，再在附近搜尋店名或大樓名稱
+// 座標只用來估算交通時間；點店名還是會打開 Google 地圖上準確的那一家
+async function locateQuery(query, gmap) {
+  const tokens = query.split(/[\s+]+/).filter(Boolean);
+  const isAddr = t => /^\d|chome|丁目|番地|^\d+F$/i.test(t);
+  const cut = tokens.findIndex(isAddr);
+  const nameTokens = cut > 0 ? tokens.slice(0, cut) : tokens.slice(0, 3);
+  const name = nameTokens.slice(0, 3).join(' ');
+  const postal = (query.match(/\d{3}-\d{4}/) || [])[0];
+  const getJson = async u => (await fetch(u)).json();
+
+  let center = null;
+  if (postal) {
+    const r = await getJson(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=jp&postalcode=${postal}`);
+    if (r[0]) center = { lat: +r[0].lat, lng: +r[0].lon };
+  }
+  // 名稱一個一個試（長的先），只接受離郵遞區號區域 1.5 公里內的結果
+  const tries = [...new Set([nameTokens.join(' '), ...[...nameTokens].sort((a, b) => b.length - a.length)])]
+    .filter(t => t.length >= 2).slice(0, 4);
+  let found = null;
+  for (const t of tries) {
+    const bias = center ? `&lat=${center.lat}&lon=${center.lng}` : '';
+    const r = await getJson(`https://photon.komoot.io/api/?limit=1&q=${encodeURIComponent(t)}${bias}`);
+    const f = r.features && r.features[0];
+    if (!f) continue;
+    const cand = { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+    if (!center || distanceKm(center, cand) < 1.5) { found = cand; break; }
+  }
+  const ll = found || center;
+  if (!ll) return null;
+  const p = { name: name || '地圖上的地點', ...ll, hours: 1.5, gmap, approx: true };
+  p.region = nearestRegion(p);
+  return p;
+}
+
 async function expandShort(short, typed) {
   const fail = '讀不到這個短網址的位置。請先用 Safari 打開它，再複製網址列的完整網址貼上';
   if (!EXPAND_API) { showOptions([msgOption(fail)]); return; }
@@ -261,10 +303,20 @@ async function expandShort(short, typed) {
     const g = parseGmap((await res.json()).url || '');
     if (q.value.trim() !== typed) return; // 讀取時已經改打別的了
     if (!g || g.short) { showOptions([msgOption(fail)]); return; }
-    showOptions([{ html: `<span class="web">📍 加入「${esc(g.name)}」（Google 地圖）</span><span class="tag">${esc(g.region)}</span>`, pick: () => addPlace(g) }]);
+    offerGmap(g, typed);
   } catch (e) {
     showOptions([msgOption('讀取失敗，請檢查網路後再試')]);
   }
+}
+// 顯示「加入」選項；沒有座標的連結先用地址找位置
+async function offerGmap(g, typed) {
+  if (g.query) {
+    showOptions([msgOption('找這個地點的位置中…')]);
+    try { g = await locateQuery(g.query, g.gmap); } catch (e) { g = null; }
+    if (q.value.trim() !== typed) return;
+    if (!g) { showOptions([msgOption('找不到這個地點的位置。可以改用店名搜尋，或用「在地圖上點選位置」')]); return; }
+  }
+  showOptions([{ html: `<span class="web">📍 加入「${esc(g.name)}」（Google 地圖）</span><span class="tag">${esc(g.region)}</span>`, pick: () => addPlace(g) }]);
 }
 function choose(i) {
   const o = options[i];
